@@ -146,7 +146,10 @@ def test_convert_dttm(
         ("CHAR", types.String, None, GenericDataType.STRING, False),
         ("VARCHAR", types.String, None, GenericDataType.STRING, False),
         ("TEXT", types.String, None, GenericDataType.STRING, False),
-        ("ARRAY", types.String, None, GenericDataType.STRING, False),
+        # Arrays (as reflected for datasets, or without an element type)
+        ("ARRAY", types.String, None, GenericDataType.MULTI_VALUE, False),
+        ("VARCHAR[]", types.String, None, GenericDataType.MULTI_VALUE, False),
+        ("NUMERIC(10, 2)[]", types.String, None, GenericDataType.MULTI_VALUE, False),
         ("ENUM", ENUM, None, GenericDataType.STRING, False),
         ("JSON", JSON, None, GenericDataType.STRING, False),
         # Temporal
@@ -934,3 +937,103 @@ def test_extended_aggregation_func_compiles_expected_sql(
         )
     )
     assert compiled == expected_sql
+
+
+def _compile_literal(expr: Any) -> str:
+    return str(
+        expr.compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+
+
+def test_postgres_supports_multivalue_columns() -> None:
+    assert spec.supports_multivalue_columns is True
+
+
+@pytest.mark.parametrize(
+    "spec_path",
+    [
+        "superset.db_engine_specs.cockroachdb.CockroachDbEngineSpec",
+        "superset.db_engine_specs.greenplum.GreenplumEngineSpec",
+        "superset.db_engine_specs.risingwave.RisingWaveDbEngineSpec",
+        "superset.db_engine_specs.aurora.AuroraPostgresDataAPI",
+    ],
+)
+def test_postgres_descendants_keep_arrays_as_strings(spec_path: str) -> None:
+    """Engines inheriting PostgreSQL's mappings don't opt in implicitly."""
+    from importlib import import_module
+
+    module_name, class_name = spec_path.rsplit(".", 1)
+    descendant = getattr(import_module(module_name), class_name)
+
+    assert descendant.supports_multivalue_columns is False
+    column_spec = descendant.get_column_spec("VARCHAR[]")
+    assert column_spec is not None
+    assert column_spec.generic_type == GenericDataType.STRING
+
+
+def test_postgres_array_contains_any_sql() -> None:
+    expr = spec.array_contains_any(column("skills"), ["Driver", "Cook"])
+    assert _compile_literal(expr) == 'skills && \'{"Driver","Cook"}\''
+
+
+def test_postgres_array_contains_all_sql() -> None:
+    expr = spec.array_contains_all(column("skills"), ["Driver", "Cook"])
+    assert _compile_literal(expr) == 'skills @> \'{"Driver","Cook"}\''
+
+
+def test_postgres_array_contains_binds_parameters() -> None:
+    """The array is a bound parameter, not inlined (SQL-injection safety)."""
+    compiled = spec.array_contains_any(column("skills"), ["Driver"]).compile(
+        dialect=postgresql.dialect()
+    )
+    assert "Driver" not in str(compiled)
+    assert '{"Driver"}' in compiled.params.values()
+
+
+@pytest.mark.parametrize(
+    "values,expected",
+    [
+        ([5, 6], '{"5","6"}'),
+        ([True], '{"True"}'),
+        (['a"b', "c\\d", "e,f", "{g}"], '{"a\\"b","c\\\\d","e,f","{g}"}'),
+        # None is an SQL NULL element; the string "NULL" stays a string.
+        ([None, "NULL"], '{NULL,"NULL"}'),
+        ([], "{}"),
+    ],
+)
+def test_postgres_array_literal_escapes_elements(
+    values: list[Any], expected: str
+) -> None:
+    literal = spec.array_literal(values)
+    assert literal.compile(dialect=postgresql.dialect()).params == {"param_1": expected}
+
+
+def test_postgres_array_length_and_explode_sql() -> None:
+    assert _compile_literal(spec.array_length(column("skills"))) == (
+        "cardinality(skills)"
+    )
+    assert _compile_literal(spec.array_explode(column("skills"))) == ("unnest(skills)")
+
+
+@pytest.mark.parametrize(
+    "native_type,expected",
+    [
+        ("VARCHAR[]", GenericDataType.STRING),
+        ("TEXT[]", GenericDataType.STRING),
+        ("INTEGER[]", GenericDataType.NUMERIC),
+        ("NUMERIC(10, 2)[]", GenericDataType.NUMERIC),
+        ("DATE[]", GenericDataType.TEMPORAL),
+        ("BOOLEAN[]", GenericDataType.BOOLEAN),
+        # Multi-dimensional arrays and unknown element types aren't resolved.
+        ("INTEGER[][]", None),
+        ("ARRAY", None),
+        ("VARCHAR", None),
+        (None, None),
+    ],
+)
+def test_postgres_get_array_element_type(
+    native_type: Optional[str], expected: Optional[GenericDataType]
+) -> None:
+    assert spec.get_array_element_type(native_type) == expected

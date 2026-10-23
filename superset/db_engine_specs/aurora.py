@@ -68,6 +68,9 @@ class AuroraPostgresDataAPI(PostgresEngineSpec):
 
     engine = "postgresql"
     default_driver = "auroradataapi"
+    # Array columns haven't been verified through the Data API driver; they
+    # stay strings until it opts in.
+    supports_multivalue_columns = False
     engine_name = "Aurora PostgreSQL (Data API)"
     sqlalchemy_uri_placeholder = (
         "postgresql+auroradataapi://{aws_access_id}:{aws_secret_access_key}@/"

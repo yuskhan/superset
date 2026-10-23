@@ -75,6 +75,7 @@ class TrinoEngineSpec(PrestoBaseEngineSpec):
     engine_name = "Trino"
     allows_alias_to_source_column = False
     supports_grouping_sets = True
+    supports_multivalue_columns = True
     # The client sets queryId after its first request, then blocks in
     # execute() until rows arrive or the query ends.
     has_query_id_during_execute = True

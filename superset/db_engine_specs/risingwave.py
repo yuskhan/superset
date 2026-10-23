@@ -25,6 +25,9 @@ from superset.db_engine_specs.postgres import PostgresEngineSpec
 class RisingWaveDbEngineSpec(PostgresEngineSpec):
     engine = "risingwave"
     engine_name = "RisingWave"
+    # Inherits PostgreSQL's array mappings and hooks, which haven't been
+    # verified against this engine; arrays stay strings until it opts in.
+    supports_multivalue_columns = False
     default_driver = ""
     sqlalchemy_uri_placeholder = (
         "risingwave://user:password@host:port/dbname[?key=value&key=value...]"

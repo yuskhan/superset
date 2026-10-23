@@ -27,6 +27,9 @@ from superset.db_engine_specs.postgres import PostgresEngineSpec
 class CockroachDbEngineSpec(PostgresEngineSpec):
     engine = "cockroachdb"
     engine_name = "CockroachDB"
+    # Inherits PostgreSQL's array mappings and hooks, which haven't been
+    # verified against this engine; arrays stay strings until it opts in.
+    supports_multivalue_columns = False
 
     # `PostgresEngineSpec._extended_aggregations` (MEDIAN/STDDEV_SAMP/VAR_SAMP)
     # is verified against real Postgres behavior, not CockroachDB's distributed

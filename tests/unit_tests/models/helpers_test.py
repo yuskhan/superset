@@ -28,7 +28,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from pytest_mock import MockerFixture
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, String
 from sqlalchemy.orm.session import Session
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.sql.elements import Cast, ColumnElement
@@ -6821,3 +6821,46 @@ def test_not_in_filter_null_check_uses_the_engine_spec_hook(
     kql = compile_not_in()
     assert "isnull(state)" in kql
     assert "IS NULL" not in kql
+
+
+def test_values_for_column_array_elements_falls_back_without_explode(
+    mocker: MockerFixture, database: Database
+) -> None:
+    """
+    An array-capable engine whose element expansion isn't an expression (e.g.
+    Trino's CROSS JOIN UNNEST) suggests whole arrays instead of failing.
+    """
+    import pandas as pd
+
+    from superset.connectors.sqla.models import SqlaTable, TableColumn
+    from superset.db_engine_specs.base import ColumnSpec
+    from superset.db_engine_specs.sqlite import SqliteEngineSpec
+
+    mocker.patch.object(SqliteEngineSpec, "supports_multivalue_columns", True)
+    mocker.patch.object(
+        SqliteEngineSpec,
+        "get_column_spec",
+        return_value=ColumnSpec(
+            sqla_type=String(),
+            generic_type=GenericDataType.MULTI_VALUE,
+            is_dttm=False,
+        ),
+    )
+    explode = mocker.patch.object(
+        SqliteEngineSpec, "array_explode", side_effect=NotImplementedError
+    )
+    table = SqlaTable(
+        database=database,
+        schema=None,
+        table_name="t",
+        columns=[TableColumn(column_name="b", type="ARRAY")],
+    )
+
+    with patch(
+        "pandas.read_sql_query",
+        return_value=pd.DataFrame({"column_values": ["['x']"]}),
+    ) as read_sql_query:
+        assert table.values_for_column("b", array_elements=True) == ["['x']"]
+
+    explode.assert_called_once()
+    assert "DISTINCT b AS column_values" in str(read_sql_query.call_args.kwargs["sql"])

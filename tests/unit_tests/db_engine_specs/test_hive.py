@@ -274,3 +274,14 @@ def test_spark_identifier_quote_uses_backticks() -> None:
         "end": "`",
         "escape_by_doubling": True,
     }
+
+
+def test_hive_keeps_arrays_as_strings() -> None:
+    """Hive inherits Presto's array mapping but not its array functions."""
+    from superset.db_engine_specs.hive import HiveEngineSpec
+    from superset.utils.core import GenericDataType
+
+    assert HiveEngineSpec.supports_multivalue_columns is False
+    column_spec = HiveEngineSpec.get_column_spec("array<string>")
+    assert column_spec is not None
+    assert column_spec.generic_type == GenericDataType.STRING
