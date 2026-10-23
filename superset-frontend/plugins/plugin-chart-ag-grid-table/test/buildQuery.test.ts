@@ -2205,3 +2205,115 @@ describe('plugin-chart-ag-grid-table', () => {
     });
   });
 });
+
+const rawSummaryFormData: TableChartFormData = {
+  viz_type: VizType.Table,
+  datasource: '11__table',
+  query_mode: QueryMode.Raw,
+  all_columns: ['name', 'amount', 'tax', 'rate'],
+  show_totals: true,
+  server_pagination: true,
+};
+
+const rawSummaryOwnState = {
+  rawSummaryColumns: ['amount', 'tax', 'rate'],
+};
+
+test('raw summary uses each column_config aggregation and skips NONE', () => {
+  const { queries } = buildQuery(
+    {
+      ...rawSummaryFormData,
+      totals_aggregate: 'SUM',
+      column_config: {
+        tax: { summaryAggregate: 'MAX' },
+        rate: { summaryAggregate: 'NONE' },
+      } as TableChartFormData['column_config'],
+    },
+    { ownState: rawSummaryOwnState },
+  );
+
+  expect(queries[2].metrics).toEqual([
+    {
+      expressionType: 'SIMPLE',
+      aggregate: 'SUM',
+      column: { column_name: 'amount' },
+      label: 'amount',
+    },
+    {
+      expressionType: 'SIMPLE',
+      aggregate: 'MAX',
+      column: { column_name: 'tax' },
+      label: 'tax',
+    },
+  ]);
+});
+
+test('raw summary falls back to the chart aggregation for Chart default', () => {
+  const { queries } = buildQuery(
+    {
+      ...rawSummaryFormData,
+      totals_aggregate: 'AVG',
+      column_config: {
+        amount: { summaryAggregate: 'DEFAULT' },
+      } as TableChartFormData['column_config'],
+    },
+    { ownState: { rawSummaryColumns: ['amount'] } },
+  );
+
+  expect(queries[2].metrics).toEqual([
+    expect.objectContaining({ aggregate: 'AVG', label: 'amount' }),
+  ]);
+});
+
+test('raw summary adds no totals query when every column is NONE', () => {
+  const { queries } = buildQuery(
+    {
+      ...rawSummaryFormData,
+      column_config: {
+        amount: { summaryAggregate: 'NONE' },
+      } as TableChartFormData['column_config'],
+    },
+    { ownState: { rawSummaryColumns: ['amount'] } },
+  );
+
+  expect(queries).toHaveLength(2);
+});
+
+test('raw grand total keeps AG Grid column filters and search', () => {
+  const { queries } = buildQuery(rawSummaryFormData, {
+    ownState: {
+      ...rawSummaryOwnState,
+      searchColumn: 'name',
+      searchText: 'cust',
+      agGridSimpleFilters: [{ col: 'amount', op: '>', val: 100 }],
+      agGridComplexWhere: '(tax > 5 OR tax < 1)',
+    },
+  });
+  const totals = queries[2];
+
+  expect(totals.filters).toEqual(
+    expect.arrayContaining([
+      { col: 'name', op: 'ILIKE', val: 'cust%' },
+      { col: 'amount', op: '>', val: 100 },
+    ]),
+  );
+  expect(totals.extras?.where).toContain('(tax > 5 OR tax < 1)');
+});
+
+test('aggregate-mode totals still drop AG Grid complex filters', () => {
+  const { queries } = buildQuery(
+    {
+      viz_type: VizType.Table,
+      datasource: '11__table',
+      query_mode: QueryMode.Aggregate,
+      groupby: ['state'],
+      metrics: ['count'],
+      show_totals: true,
+      server_pagination: true,
+    },
+    { ownState: { agGridComplexWhere: '(state = 1 OR state = 2)' } },
+  );
+
+  expect(queries[0].extras?.where).toContain('(state = 1 OR state = 2)');
+  expect(queries[2].extras?.where).toBeUndefined();
+});

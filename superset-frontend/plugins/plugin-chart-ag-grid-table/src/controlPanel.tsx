@@ -63,6 +63,8 @@ import {
 import { GenericDataType } from '@apache-superset/core/common';
 import { isEmpty, last } from 'lodash-es';
 import { PAGE_SIZE_OPTIONS, SERVER_PAGE_SIZE_OPTIONS } from './consts';
+import { DEFAULT_FILTER_DEBOUNCE_MS } from './utils/filterApplyMode';
+import { getSummaryColumnConfigLayout } from './utils/summaryColumnConfig';
 
 /**
  * Generate comparison column names for a given column.
@@ -424,6 +426,50 @@ const config: ControlPanelConfig = {
         ],
         [
           {
+            name: 'column_filter_apply_mode',
+            config: {
+              type: 'SelectControl',
+              label: t('Column filter apply mode'),
+              renderTrigger: true,
+              clearable: false,
+              default: 'debounced',
+              choices: [
+                ['instant', t('Instant')],
+                ['debounced', t('Debounced')],
+                ['manual', t('Manual (Apply button or Enter)')],
+              ],
+              description: t(
+                'When a column filter change is applied. With server ' +
+                  'pagination every applied change runs a query, so ' +
+                  'Debounced waits until typing pauses and Manual waits ' +
+                  'for the Apply button or the Enter key.',
+              ),
+            },
+          },
+        ],
+        [
+          {
+            name: 'column_filter_debounce_ms',
+            config: {
+              type: 'SliderControl',
+              label: t('Column filter debounce (ms)'),
+              renderTrigger: true,
+              default: DEFAULT_FILTER_DEBOUNCE_MS,
+              min: 100,
+              max: 2000,
+              step: 100,
+              description: t(
+                'How long typing must pause before a column filter applies',
+              ),
+              visibility: ({ controls }: ControlPanelsContainerProps) =>
+                (controls?.column_filter_apply_mode?.value ?? 'debounced') ===
+                'debounced',
+              resetOnHide: false,
+            },
+          },
+        ],
+        [
+          {
             name: 'row_limit',
             config: {
               type: 'SelectControl',
@@ -660,6 +706,27 @@ const config: ControlPanelConfig = {
         ],
         [
           {
+            name: 'show_page_subtotal',
+            config: {
+              type: 'CheckboxControl',
+              label: t('Show current page subtotal'),
+              renderTrigger: true,
+              default: false,
+              description: t(
+                'Add a row aggregating only the rows on the current page, ' +
+                  'above the summary of all matching rows. Each numeric ' +
+                  "column's aggregation can be changed or turned off under " +
+                  'Customize columns.',
+              ),
+              visibility: ({ controls }: ControlPanelsContainerProps) =>
+                Boolean(controls?.show_totals?.value) &&
+                isRawMode({ controls }),
+              resetOnHide: false,
+            },
+          },
+        ],
+        [
+          {
             name: 'show_numbered_column',
             config: {
               type: 'CheckboxControl',
@@ -780,6 +847,12 @@ const config: ControlPanelConfig = {
                     childColumnMap,
                     timeComparisonColumnMap,
                   },
+                  // Per-column summary aggregation only applies to the
+                  // raw-records summary rows.
+                  ...(explore?.controls?.show_totals?.value &&
+                    getQueryMode(explore.controls) === QueryMode.Raw && {
+                      configFormLayout: getSummaryColumnConfigLayout(),
+                    }),
                 };
               },
             },

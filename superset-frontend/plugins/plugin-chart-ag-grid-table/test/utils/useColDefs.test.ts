@@ -1243,3 +1243,50 @@ test('valueGetter handles missing node or rowIndex gracefully', () => {
   expect(serverGetter({})).toBe(2 * 5 + 1);
   expect(serverGetter({ node: {} })).toBe(11);
 });
+
+test('column filters follow the configured apply mode', () => {
+  const textCol = makeColumn({ key: 'name', label: 'Name' });
+  const dateCol = makeColumn({
+    key: 'ds',
+    label: 'Date',
+    dataType: GenericDataType.Temporal,
+  });
+  const { result, rerender } = renderHook(
+    ({ mode }) =>
+      useColDefs({
+        ...defaultProps,
+        serverPagination: true,
+        columns: [textCol, dateCol],
+        data: [{ name: 'Alice', ds: null }],
+        columnFilterApplyMode: mode,
+        columnFilterDebounceMs: 900,
+      }),
+    {
+      wrapper: defaultThemeWrapper,
+      initialProps: {
+        mode: 'debounced' as 'instant' | 'debounced' | 'manual',
+      },
+    },
+  );
+
+  expect(result.current[0].filterParams).toEqual({ debounceMs: 900 });
+  // The date filter keeps its server-side options alongside the apply mode.
+  expect(result.current[1].filterParams).toEqual(
+    expect.objectContaining({
+      debounceMs: 900,
+      filterOptions: expect.any(Array),
+    }),
+  );
+
+  rerender({ mode: 'manual' });
+  expect(result.current[0].filterParams).toEqual({
+    buttons: ['apply', 'reset'],
+    closeOnApply: true,
+  });
+  expect(result.current[1].filterParams).toEqual(
+    expect.objectContaining({ buttons: ['apply', 'reset'] }),
+  );
+
+  rerender({ mode: 'instant' });
+  expect(result.current[0].filterParams).toEqual({ debounceMs: 0 });
+});

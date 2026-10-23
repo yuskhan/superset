@@ -64,6 +64,7 @@ import CustomHeader from '../AgGridTable/components/CustomHeader';
 import { NOOP_FILTER_COMPARATOR, ROW_NUMBER_COL_ID } from '../consts';
 import { valueFormatter, valueGetter } from './formatValue';
 import getCellStyle from './getCellStyle';
+import { ColumnFilterApplyMode, getFilterApplyParams } from './filterApplyMode';
 
 interface InputData {
   [key: string]: DataRecordValue;
@@ -94,6 +95,8 @@ type UseColDefsProps = {
   comparisonColorEnabled?: boolean;
   comparisonColorScheme?: string;
   zebraStriping?: boolean;
+  columnFilterApplyMode?: ColumnFilterApplyMode;
+  columnFilterDebounceMs?: number;
 };
 
 function getValueRange(
@@ -266,6 +269,8 @@ export const useColDefs = ({
   comparisonColorEnabled,
   comparisonColorScheme,
   zebraStriping,
+  columnFilterApplyMode,
+  columnFilterDebounceMs,
 }: UseColDefsProps) => {
   const theme = useTheme();
   // transformProps.ts computes these fresh on every call (no memoization),
@@ -337,6 +342,10 @@ export const useColDefs = ({
         getValueRange(originalKey, alignPN || alignPositiveNegative, data);
 
       const filter = getFilterType(col);
+      const filterApplyParams = getFilterApplyParams(
+        columnFilterApplyMode,
+        columnFilterDebounceMs,
+      );
 
       return {
         field: colId,
@@ -380,6 +389,7 @@ export const useColDefs = ({
           }),
         minWidth: config?.columnWidth ?? 100,
         filter,
+        filterParams: filterApplyParams,
         ...(isPercentMetric && {
           filterValueGetter,
         }),
@@ -406,10 +416,12 @@ export const useColDefs = ({
           filterValueGetter: dateFilterValueGetter,
           filterParams: serverPagination
             ? {
+                ...filterApplyParams,
                 filterOptions: SERVER_SIDE_DATE_FILTER_OPTIONS,
                 comparator: NOOP_FILTER_COMPARATOR,
               }
             : {
+                ...filterApplyParams,
                 comparator: dateFilterComparator,
               },
         }),
@@ -496,6 +508,8 @@ export const useColDefs = ({
       serverPagination,
       alignPositiveNegative,
       zebraStriping,
+      columnFilterApplyMode,
+      columnFilterDebounceMs,
       theme.colorBgBase,
       theme.colorFillSecondary,
       theme.colorFillQuaternary,

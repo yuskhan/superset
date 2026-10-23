@@ -49,6 +49,8 @@ import {
   IHeaderParams,
   CustomCellRendererProps,
 } from '@superset-ui/core/components/ThemedAgGridReact';
+import type { ColumnFilterApplyMode } from './utils/filterApplyMode';
+import type { SummaryAggregate } from './utils/summaryAggregates';
 
 // Re-export shared types used by internal plugin files that import from './types'
 // Types used locally in this file - re-export from local binding
@@ -89,6 +91,9 @@ export type TableChartFormData = QueryFormData & {
   show_numbered_column?: boolean;
   header_groups?: HeaderGroupConfig[];
   zebra_striping?: boolean;
+  show_page_subtotal?: boolean;
+  column_filter_apply_mode?: ColumnFilterApplyMode;
+  column_filter_debounce_ms?: number;
 };
 
 export interface TableChartProps extends ChartProps {
@@ -134,6 +139,10 @@ export interface AgGridTableChartTransformedProps<
   totals: DataRecord | undefined;
   totalsAggregate: TotalsAggregate;
   showTotals: boolean;
+  showPageSubtotal: boolean;
+  rawSummaryAggregates: Record<string, Exclude<SummaryAggregate, 'NONE'>>;
+  columnFilterApplyMode: ColumnFilterApplyMode;
+  columnFilterDebounceMs: number;
   columnColorFormatters: ColorFormatters;
   basicColorFormatters?: { [Key: string]: BasicColorFormatterType }[];
   basicColorColumnFormatters?: { [Key: string]: BasicColorFormatterType }[];

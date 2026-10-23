@@ -50,6 +50,8 @@ import {
 } from '@superset-ui/chart-controls';
 import isEqualColumns from './utils/isEqualColumns';
 import { BASIC_COLOR_FORMATTERS_ROW_KEY } from './consts';
+import { DEFAULT_FILTER_DEBOUNCE_MS } from './utils/filterApplyMode';
+import { getRawSummaryAggregates } from './utils/summaryAggregates';
 import {
   DataColumnMeta,
   TableChartProps,
@@ -601,6 +603,10 @@ const transformProps = (
     show_cell_bars: showCellBars = true,
     color_pn: colorPositiveNegative = true,
     show_totals: showTotals,
+    show_page_subtotal: showPageSubtotal = false,
+    column_filter_apply_mode: columnFilterApplyMode = 'debounced',
+    column_filter_debounce_ms:
+      columnFilterDebounceMs = DEFAULT_FILTER_DEBOUNCE_MS,
     conditional_formatting: conditionalFormatting,
     comparison_color_enabled: comparisonColorEnabled = false,
     comparison_color_scheme: comparisonColorScheme = ColorSchemeEnum.Green,
@@ -925,6 +931,12 @@ const transformProps = (
           .filter(col => col.isNumeric && datasetColumnNames.has(col.key))
           .map(col => col.key)
       : [];
+  const totalsAggregate = toTotalsAggregate(formData.totals_aggregate);
+  const rawSummaryAggregates = getRawSummaryAggregates(
+    rawSummaryColumns,
+    formData.column_config,
+    totalsAggregate,
+  );
 
   // Strip saved filter from chartState after initial application to prevent re-injection
   let chartState = serverPaginationData?.chartState as
@@ -969,8 +981,13 @@ const transformProps = (
     isUsingTimeComparison,
     colorPositiveNegative,
     totals,
-    totalsAggregate: toTotalsAggregate(formData.totals_aggregate),
+    totalsAggregate,
     showTotals,
+    showPageSubtotal:
+      Boolean(showTotals) && queryMode === QueryMode.Raw && showPageSubtotal,
+    rawSummaryAggregates,
+    columnFilterApplyMode,
+    columnFilterDebounceMs,
     columnColorFormatters,
     basicColorColumnFormatters,
     basicColorFormatters,

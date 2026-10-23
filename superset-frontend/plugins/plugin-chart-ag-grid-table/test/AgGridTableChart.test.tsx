@@ -1353,3 +1353,134 @@ test('AgGridTableChart renders a temporal column with a blank row without crashi
   expect(cellText).toContain('N/A');
   expect(cellText).not.toContain('');
 });
+
+const renderChart = (props: ReturnType<typeof transformProps>) =>
+  render(
+    ProviderWrapper({
+      children: (
+        <AgGridTableChart
+          {...props}
+          setDataMask={mockSetDataMask}
+          slice_id={1}
+        />
+      ),
+    }),
+  );
+
+test('Clear all filters resets column filters and search in one ownState write', async () => {
+  const props = transformProps({
+    ...testData.basic,
+    rawFormData: {
+      ...testData.basic.rawFormData,
+      server_pagination: true,
+      include_search: true,
+    },
+  });
+  props.serverPagination = true;
+  props.includeSearch = true;
+  props.rowCount = 50;
+  props.serverPaginationData = {
+    currentPage: 2,
+    pageSize: 20,
+    searchColumn: 'name',
+    searchText: 'Mi',
+    agGridFilterModel: {
+      name: { filterType: 'text', type: 'contains', filter: 'a' },
+    },
+    agGridSimpleFilters: [{ col: 'name', op: 'ILIKE', val: '%a%' }],
+    sortBy: [{ key: 'name', desc: true }],
+  };
+  renderChart(props);
+
+  const button = await screen.findByRole('button', {
+    name: 'Clear all filters (2)',
+  });
+  mockSetDataMask.mockClear();
+  await userEvent.click(button);
+
+  await waitFor(() => expect(mockSetDataMask).toHaveBeenCalled());
+  // Give the debounced search and the grid's filterChanged event time to fire.
+  await new Promise(resolve => setTimeout(resolve, 700));
+  expect(mockSetDataMask).toHaveBeenCalledTimes(1);
+  const { ownState } = mockSetDataMask.mock.calls[0][0];
+  expect(ownState).toEqual(
+    expect.objectContaining({
+      agGridFilterModel: undefined,
+      agGridSimpleFilters: [],
+      searchText: '',
+      currentPage: 0,
+      // Sorting is left as is.
+      sortBy: [{ key: 'name', desc: true }],
+    }),
+  );
+  expect(screen.getByPlaceholderText('Search')).toHaveValue('');
+});
+
+test('Clear all filters is hidden without active filters', async () => {
+  const props = transformProps({
+    ...testData.basic,
+    rawFormData: { ...testData.basic.rawFormData, include_search: true },
+  });
+  props.includeSearch = true;
+  renderChart(props);
+
+  await waitFor(() => {
+    expect(document.querySelector('.ag-container')).toBeInTheDocument();
+  });
+  expect(
+    screen.queryByRole('button', { name: /Clear all filters/ }),
+  ).not.toBeInTheDocument();
+
+  // Client-side search counts as an active filter and is cleared too.
+  await userEvent.type(screen.getByPlaceholderText('Search'), 'Mi');
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Clear all filters (1)' }),
+  );
+  expect(screen.getByPlaceholderText('Search')).toHaveValue('');
+  expect(
+    screen.queryByRole('button', { name: /Clear all filters/ }),
+  ).not.toBeInTheDocument();
+});
+
+test('raw records show a current page subtotal above the filtered grand total', async () => {
+  const props = transformProps({
+    ...rawSummaryProps,
+    rawFormData: {
+      ...rawSummaryProps.rawFormData,
+      show_page_subtotal: true,
+    },
+  });
+  expect(props.showPageSubtotal).toBe(true);
+  expect(props.rawSummaryAggregates).toEqual({ sum__num: 'SUM' });
+  renderChart(props);
+
+  await waitFor(() => {
+    expect(screen.getAllByText('Current page subtotal').length).toBeGreaterThan(
+      0,
+    );
+  });
+  expect(screen.getAllByText('Filtered grand total').length).toBeGreaterThan(0);
+});
+
+test('transformProps only enables the page subtotal for raw records with a summary', () => {
+  expect(
+    transformProps({
+      ...rawSummaryProps,
+      rawFormData: {
+        ...rawSummaryProps.rawFormData,
+        show_page_subtotal: true,
+        show_totals: false,
+      },
+    }).showPageSubtotal,
+  ).toBe(false);
+  expect(
+    transformProps({
+      ...testData.basic,
+      rawFormData: {
+        ...testData.basic.rawFormData,
+        show_totals: true,
+        show_page_subtotal: true,
+      },
+    }).showPageSubtotal,
+  ).toBe(false);
+});

@@ -99,6 +99,10 @@ export default function TableChart<D extends DataRecord = DataRecord>(
     totals,
     totalsAggregate,
     showTotals,
+    showPageSubtotal,
+    rawSummaryAggregates,
+    columnFilterApplyMode,
+    columnFilterDebounceMs,
     columnColorFormatters,
     basicColorFormatters,
     width,
@@ -403,6 +407,8 @@ export default function TableChart<D extends DataRecord = DataRecord>(
     comparisonColorEnabled: formData?.comparison_color_enabled,
     comparisonColorScheme: formData?.comparison_color_scheme,
     zebraStriping,
+    columnFilterApplyMode,
+    columnFilterDebounceMs,
   });
 
   const isActiveFilterValue = useCallback(
@@ -678,6 +684,30 @@ export default function TableChart<D extends DataRecord = DataRecord>(
     [writeOwnState, searchOptions],
   );
 
+  // Clears every column filter and the search box in a single ownState write,
+  // so the table re-queries once instead of once per cleared filter. Sorting
+  // is left as is.
+  const handleClearAllFilters = useCallback(() => {
+    if (onChartStateChange && chartState) {
+      onChartStateChange({
+        ...chartState,
+        filterModel: undefined,
+        timestamp: Date.now(),
+      });
+    }
+    if (!serverPagination) return;
+    writeOwnState({
+      agGridFilterModel: undefined,
+      agGridSimpleFilters: [],
+      agGridComplexWhere: undefined,
+      agGridHavingClause: undefined,
+      searchText: '',
+      currentPage: 0,
+      lastFilteredColumn: undefined,
+      lastFilteredInputPosition: undefined,
+    });
+  }, [writeOwnState, serverPagination, onChartStateChange, chartState]);
+
   const handleSortByChange = useCallback(
     (sortBy: SortByItem[]) => {
       if (!serverPagination) return;
@@ -752,6 +782,7 @@ export default function TableChart<D extends DataRecord = DataRecord>(
         onSearchChange={handleSearch}
         onSortChange={handleSortByChange}
         onFilterChanged={handleFilterChanged}
+        onClearAllFilters={handleClearAllFilters}
         metricColumns={metricColumns}
         id={slice_id}
         handleCellClicked={handleCellClicked}
@@ -769,6 +800,8 @@ export default function TableChart<D extends DataRecord = DataRecord>(
         showTotals={
           showTotals && totals !== undefined && Object.keys(totals).length > 0
         }
+        showPageSubtotal={showPageSubtotal}
+        rawSummaryAggregates={rawSummaryAggregates}
         width={tableSize.width}
         onColumnStateChange={handleColumnStateChange}
         chartState={chartState}

@@ -29,7 +29,11 @@ import {
   type RefObject,
 } from 'react';
 
-import { Constants, ThemedAgGridReact } from '@superset-ui/core/components';
+import {
+  Button,
+  Constants,
+  ThemedAgGridReact,
+} from '@superset-ui/core/components';
 import {
   AgGridReact,
   AllCommunityModule,
@@ -56,6 +60,12 @@ import { SearchOutlined } from '@ant-design/icons';
 import { debounce, isEqual } from 'lodash-es';
 import Pagination from './components/Pagination';
 import SearchSelectDropdown from './components/SearchSelectDropdown';
+import {
+  aggregateRows,
+  PAGE_SUBTOTAL_KEY,
+  SUMMARY_LABEL_KEY,
+  SummaryAggregate,
+} from '../utils/summaryAggregates';
 import { SearchOption, SortByItem } from '../types';
 import getInitialSortState, { shouldSort } from '../utils/getInitialSortState';
 import getInitialFilterModel from '../utils/getInitialFilterModel';
@@ -115,9 +125,12 @@ export interface AgGridTableProps {
   renderTimeComparisonDropdown: () => JSX.Element | null;
   cleanedTotals: DataRecord;
   showTotals: boolean;
+  showPageSubtotal?: boolean;
+  rawSummaryAggregates?: Record<string, Exclude<SummaryAggregate, 'NONE'>>;
   width: number;
   onColumnStateChange?: (state: AgGridChartStateWithMetadata) => void;
   onFilterChanged?: (completeFilterState: FilterState) => void;
+  onClearAllFilters?: () => void;
   metricColumns?: string[];
   gridRef?: RefObject<AgGridReact>;
   chartState?: AgGridChartState;
@@ -228,9 +241,12 @@ const AgGridDataTable: FunctionComponent<AgGridTableProps> = memo(
     renderTimeComparisonDropdown,
     cleanedTotals,
     showTotals,
+    showPageSubtotal = false,
+    rawSummaryAggregates,
     width,
     onColumnStateChange,
     onFilterChanged,
+    onClearAllFilters,
     metricColumns = [],
     chartState,
     onClientViewChange,
@@ -244,6 +260,13 @@ const AgGridDataTable: FunctionComponent<AgGridTableProps> = memo(
     const lastCapturedStateRef = useRef<string | null>(null);
     const hasCapturedInitialGridStateRef = useRef(false);
     const filterOperationVersionRef = useRef(0);
+    // Set while "Clear all filters" resets the grid's filter model, so the
+    // resulting filterChanged event doesn't issue a query of its own.
+    const skipNextFilterChangeRef = useRef(false);
+    // Client-side column filter count; with server pagination the applied
+    // filter model in ownState is the source of truth instead.
+    const [clientFilterCount, setClientFilterCount] = useState(0);
+    const [pageSubtotal, setPageSubtotal] = useState<DataRecord | null>(null);
 
     const theme = useTheme();
     // ThemedAgGridReact defaults every AG Grid instance (including SQL Lab's
@@ -520,6 +543,13 @@ const AgGridDataTable: FunctionComponent<AgGridTableProps> = memo(
     );
 
     const handleFilterChanged = useCallback(async () => {
+      setClientFilterCount(
+        Object.keys(gridRef.current?.api?.getFilterModel() ?? {}).length,
+      );
+      if (skipNextFilterChangeRef.current) {
+        skipNextFilterChangeRef.current = false;
+        return;
+      }
       filterOperationVersionRef.current += 1;
       const currentVersion = filterOperationVersionRef.current;
 
@@ -643,6 +673,93 @@ const AgGridDataTable: FunctionComponent<AgGridTableProps> = memo(
         },
       [handleModelUpdated],
     );
+
+    // Aggregates the rows on the current page: the grid's page in client-side
+    // pagination, or every displayed row when the server sends one page.
+    const updatePageSubtotal = useCallback(() => {
+      const api = gridRef.current?.api;
+      if (!showPageSubtotal || !rawSummaryAggregates || !api) {
+        setPageSubtotal(null);
+        return;
+      }
+      const rows: DataRecord[] = [];
+      if (pagination) {
+        const pageStart =
+          api.paginationGetCurrentPage() * api.paginationGetPageSize();
+        const pageEnd = Math.min(
+          pageStart + api.paginationGetPageSize(),
+          api.getDisplayedRowCount(),
+        );
+        for (let index = pageStart; index < pageEnd; index += 1) {
+          const node = api.getDisplayedRowAtIndex(index);
+          if (node?.data) {
+            rows.push(node.data);
+          }
+        }
+      } else {
+        api.forEachNodeAfterFilterAndSort(node => {
+          if (node.data) {
+            rows.push(node.data);
+          }
+        });
+      }
+      const subtotal = aggregateRows(rows, rawSummaryAggregates);
+      setPageSubtotal(previous =>
+        isEqual(previous, subtotal) ? previous : subtotal,
+      );
+    }, [showPageSubtotal, rawSummaryAggregates, pagination]);
+
+    useEffect(() => {
+      updatePageSubtotal();
+    }, [updatePageSubtotal]);
+
+    const onModelUpdated = useCallback(() => {
+      handleModelUpdated();
+      updatePageSubtotal();
+    }, [handleModelUpdated, updatePageSubtotal]);
+
+    const pinnedBottomRowData = useMemo(() => {
+      const rows: DataRecord[] = [];
+      if (showPageSubtotal && pageSubtotal) {
+        rows.push({
+          ...pageSubtotal,
+          [SUMMARY_LABEL_KEY]: t('Current page subtotal'),
+          [PAGE_SUBTOTAL_KEY]: true,
+        });
+      }
+      if (showTotals) {
+        rows.push(
+          showPageSubtotal
+            ? {
+                ...cleanedTotals,
+                [SUMMARY_LABEL_KEY]: t('Filtered grand total'),
+              }
+            : cleanedTotals,
+        );
+      }
+      return rows.length > 0 ? rows : undefined;
+    }, [showPageSubtotal, pageSubtotal, showTotals, cleanedTotals]);
+
+    const activeFilterCount =
+      (serverPagination
+        ? Object.keys(serverPaginationData?.agGridFilterModel ?? {}).length
+        : clientFilterCount) +
+      ((serverPagination ? searchValue : quickFilterText) ? 1 : 0);
+
+    // Clears the column filters and the search box together. The chart then
+    // writes the cleared state once, so server pagination re-queries once.
+    const handleClearAllFilters = useCallback(() => {
+      debouncedSearch.cancel();
+      setSearchValue('');
+      setQuickFilterText('');
+      const api = gridRef.current?.api;
+      if (api && Object.keys(api.getFilterModel() ?? {}).length > 0) {
+        skipNextFilterChangeRef.current = Boolean(serverPagination);
+        api.setFilterModel(null);
+      }
+      setClientFilterCount(0);
+      onClearAllFilters?.();
+    }, [debouncedSearch, serverPagination, onClearAllFilters]);
 
     useEffect(() => {
       if (
@@ -794,6 +911,16 @@ const AgGridDataTable: FunctionComponent<AgGridTableProps> = memo(
               </div>
             </div>
           )}
+          {activeFilterCount > 0 && (
+            <Button
+              buttonStyle="link"
+              buttonSize="small"
+              onClick={handleClearAllFilters}
+              data-test="ag-grid-clear-all-filters"
+            >
+              {t('Clear all filters (%s)', activeFilterCount)}
+            </Button>
+          )}
         </div>
 
         <div style={gridFlexStyles}>
@@ -815,7 +942,8 @@ const AgGridDataTable: FunctionComponent<AgGridTableProps> = memo(
             onCellKeyDown={handleCellKeyDown}
             onSelectionChanged={handleSelectionChanged}
             onFilterChanged={handleFilterChanged}
-            onModelUpdated={handleModelUpdated}
+            onModelUpdated={onModelUpdated}
+            onPaginationChanged={updatePageSubtotal}
             onStateUpdated={handleGridStateChange}
             initialState={gridInitialState}
             maintainColumnOrder={!resetColumnOrder}
@@ -835,7 +963,7 @@ const AgGridDataTable: FunctionComponent<AgGridTableProps> = memo(
             paginationPageSize={pageSize}
             paginationPageSizeSelector={PAGE_SIZE_OPTIONS}
             suppressDragLeaveHidesColumns
-            pinnedBottomRowData={showTotals ? [cleanedTotals] : undefined}
+            pinnedBottomRowData={pinnedBottomRowData}
             tooltipShowDelay={500}
             localeText={{
               // Pagination controls

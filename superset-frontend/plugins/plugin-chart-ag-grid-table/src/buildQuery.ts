@@ -43,6 +43,7 @@ import {
 import { isEmpty } from 'lodash-es';
 import { TableChartFormData } from './types';
 import { updateTableOwnState } from './utils/externalAPIs';
+import { getRawSummaryAggregates } from './utils/summaryAggregates';
 import {
   convertAgGridFiltersToSQL,
   type AgGridFilterModel,
@@ -729,15 +730,19 @@ export const buildQueryUncached: BuildQuery<TableChartFormData> = (
       queryMode === QueryMode.Aggregate,
     );
     const totalsAggregate = toTotalsAggregate(formData.totals_aggregate);
-    // Raw-mode summary columns have no metric of their own to preserve, so
-    // ORIGINAL has nothing to fall back to; sum them as before.
-    const rawSummaryAggregate =
-      totalsAggregate === 'ORIGINAL' ? 'SUM' : totalsAggregate;
+    // Each raw-mode summary column uses its own column_config aggregation,
+    // else the chart-wide one; columns set to NONE are left out.
+    const rawSummaryAggregates = getRawSummaryAggregates(
+      rawSummaryColumns,
+      formData.column_config,
+      totalsAggregate,
+    );
+    const rawSummaryEntries = Object.entries(rawSummaryAggregates);
     const totalsMetrics =
-      rawSummaryColumns.length > 0
-        ? rawSummaryColumns.map(columnName => ({
+      rawSummaryEntries.length > 0
+        ? rawSummaryEntries.map(([columnName, aggregate]) => ({
             expressionType: 'SIMPLE' as const,
-            aggregate: rawSummaryAggregate,
+            aggregate,
             column: { column_name: columnName },
             label: columnName,
           }))
@@ -745,7 +750,7 @@ export const buildQueryUncached: BuildQuery<TableChartFormData> = (
           ? getTotalsMetrics(metrics ?? [], totalsAggregate)
           : undefined;
 
-    if (showAggregateTotals || rawSummaryColumns.length > 0) {
+    if (showAggregateTotals || rawSummaryEntries.length > 0) {
       // Start from the original, pre-filter extras (captured before any AG Grid
       // complexWhere/havingClause fragments were merged in above) rather than
       // trying to subtract those fragments back out of the now-combined
@@ -754,7 +759,14 @@ export const buildQueryUncached: BuildQuery<TableChartFormData> = (
       // grouping columns (columns: []), and that applies to HAVING just as much
       // as WHERE — starting clean avoids having to special-case each source.
       // The structured simpleFilters are stripped separately below.
-      const totalsExtras = { ...extras };
+      //
+      // Raw records have no grouping columns to drop, so their summary keeps
+      // every AG Grid filter: the grand total covers exactly the rows the
+      // filtered table pages through.
+      const isRawSummary = rawSummaryEntries.length > 0;
+      const totalsExtras = isRawSummary
+        ? { ...queryObject.extras }
+        : { ...extras };
       if (!totalsExtras.where) {
         delete totalsExtras.where;
       }
@@ -768,14 +780,16 @@ export const buildQueryUncached: BuildQuery<TableChartFormData> = (
         // Exclude AG Grid download filters here for the same reason the extras
         // above start clean: the totals subquery drops grouping columns, so its
         // result set is computed without the interactive AG Grid filtering.
-        filters: (queryObject.filters || []).filter(
-          filter =>
-            !agGridDownloadSimpleFilters.includes(
-              filter as unknown as SQLAlchemyFilter,
+        filters: isRawSummary
+          ? queryObject.filters
+          : (queryObject.filters || []).filter(
+              filter =>
+                !agGridDownloadSimpleFilters.includes(
+                  filter as unknown as SQLAlchemyFilter,
+                ),
             ),
-        ),
         ...(totalsMetrics ? { metrics: totalsMetrics } : {}),
-        extras: totalsExtras, // Use extras with AG Grid WHERE removed
+        extras: totalsExtras, // AG Grid WHERE removed unless raw records
         row_limit: 0,
         row_offset: 0,
         // Reapply only the percent-metric contribution rule so the totals row

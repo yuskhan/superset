@@ -26,9 +26,16 @@ import { CellRendererProps } from '../types';
 import { SummaryContainer, SummaryText } from '../styles';
 import { JsonCellRenderer } from './JsonCellRenderer';
 import { parseJsonCellValue } from './parseJsonCellValue';
+import {
+  PAGE_SUBTOTAL_KEY,
+  SUMMARY_LABEL_KEY,
+} from '../utils/summaryAggregates';
 
 const SUMMARY_TOOLTIP_TEXT = t(
   'Show total aggregations of selected metrics. Note that row limit does not apply to the result.',
+);
+const PAGE_SUBTOTAL_TOOLTIP_TEXT = t(
+  'Aggregates only the rows on the current page.',
 );
 
 /**
@@ -65,10 +72,18 @@ export const TextCellRenderer = (params: CellRendererProps) => {
     const cols = api.getAllGridColumns().filter(col => col.isVisible());
     const colAggCheck = !cols[0].getAggFunc();
     if (cols.length > 1 && colAggCheck && columns[0].key === colDef?.field) {
+      // Labelled rows (page subtotal and grand total) name themselves; the
+      // single summary row keeps the generic label.
+      const label = node.data?.[SUMMARY_LABEL_KEY];
+      const isPageSubtotal = Boolean(node.data?.[PAGE_SUBTOTAL_KEY]);
       return (
         <SummaryContainer>
-          <SummaryText>{t('Summary')}</SummaryText>
-          <Tooltip overlay={SUMMARY_TOOLTIP_TEXT}>
+          <SummaryText>{label ?? t('Summary')}</SummaryText>
+          <Tooltip
+            overlay={
+              isPageSubtotal ? PAGE_SUBTOTAL_TOOLTIP_TEXT : SUMMARY_TOOLTIP_TEXT
+            }
+          >
             <InfoCircleOutlined />
           </Tooltip>
         </SummaryContainer>
