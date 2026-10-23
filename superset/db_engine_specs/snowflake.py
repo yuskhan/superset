@@ -55,7 +55,7 @@ from superset.superset_typing import (
     OAuth2State,
 )
 from superset.utils import json
-from superset.utils.core import get_user_agent, QuerySource
+from superset.utils.core import GenericDataType, get_user_agent, QuerySource
 from superset.utils.oauth2 import encode_oauth2_state, generate_code_challenge
 
 if TYPE_CHECKING:
@@ -142,6 +142,56 @@ class SnowflakeEngineSpec(PostgresBaseEngineSpec):
     engine_name = "Snowflake"
     force_column_alias_quotes = True
     max_column_name_length = 256
+    supports_multivalue_columns = True
+
+    column_type_mappings = (
+        # ``ARRAY`` (semi-structured) or a structured ``ARRAY(VARCHAR)``.
+        (
+            re.compile(r"^array\b", re.IGNORECASE),
+            types.String(),
+            GenericDataType.MULTI_VALUE,
+        ),
+    )
+
+    @classmethod
+    def array_contains_any(cls, col: ColumnElement, values: list[Any]) -> ColumnElement:
+        return sa.func.arrays_overlap(col, cls.array_literal(values))
+
+    @classmethod
+    def array_contains_all(cls, col: ColumnElement, values: list[Any]) -> ColumnElement:
+        # ARRAY_CONTAINS compares a VARIANT against the array's elements.
+        return sa.and_(
+            *(
+                sa.func.array_contains(sa.func.to_variant(sa.literal(value)), col)
+                for value in values
+            )
+        )
+
+    @classmethod
+    def array_length(cls, col: ColumnElement) -> ColumnElement:
+        return sa.func.array_size(col)
+
+    @classmethod
+    def array_literal(cls, values: list[Any]) -> ColumnElement:
+        return sa.func.array_construct(*values)
+
+    # array_explode isn't implemented: expanding an array takes the FLATTEN
+    # table function in the FROM clause, so element suggestions fall back to
+    # whole arrays.
+
+    _ARRAY_ELEMENT_RE = re.compile(r"^array\((?P<inner>.+)\)$", re.IGNORECASE)
+
+    @classmethod
+    def get_array_element_type(cls, native_type: str | None) -> GenericDataType | None:
+        # Semi-structured ARRAY columns hold VARIANTs of any type; only a
+        # structured ARRAY(<type>) has a known element type.
+        match = cls._ARRAY_ELEMENT_RE.match((native_type or "").strip())
+        if not match:
+            return None
+        spec = cls.get_column_spec(match.group("inner").strip())
+        if not spec or spec.generic_type == GenericDataType.MULTI_VALUE:
+            return None
+        return spec.generic_type
 
     # Snowflake documents native MEDIAN/STDDEV_SAMP/VAR_SAMP aggregate functions
     # (docs.snowflake.com/en/sql-reference/functions/{median,stddev_samp,var_samp}),

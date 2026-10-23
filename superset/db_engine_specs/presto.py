@@ -33,13 +33,16 @@ import pandas as pd
 from flask import current_app as app
 from flask_babel import gettext as __, lazy_gettext as _
 from packaging.version import Version
-from sqlalchemy import Column, literal_column, text, types
+from sqlalchemy import Column, func, literal_column, text, types
 from sqlalchemy.engine.interfaces import Dialect
 from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.engine.result import Row as ResultRow
 from sqlalchemy.engine.url import URL
 from sqlalchemy.exc import NoSuchTableError
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.sql.expression import ColumnClause, Select
+from sqlalchemy.sql.functions import FunctionElement
 
 from superset import cache_manager, db, is_feature_enabled
 from superset.common.db_query_status import QueryStatus
@@ -159,6 +162,20 @@ def get_children(column: ResultSetColumnType) -> list[ResultSetColumnType]:
     raise Exception(f"Unknown type {type_}!")  # pylint: disable=broad-exception-raised
 
 
+class ArrayConstructor(FunctionElement):
+    """Presto/Trino array literal: ``ARRAY[v1, v2]`` (there's no ``array()``)."""
+
+    name = "array_constructor"
+    inherit_cache = True
+
+
+@compiles(ArrayConstructor)
+def _compile_array_constructor(
+    element: ArrayConstructor, compiler: Any, **kw: Any
+) -> str:
+    return f"ARRAY[{compiler.process(element.clauses, **kw)}]"
+
+
 class PrestoBaseEngineSpec(BaseEngineSpec, metaclass=ABCMeta):
     """
     A base class that share common functions between Presto and Trino
@@ -272,10 +289,52 @@ class PrestoBaseEngineSpec(BaseEngineSpec, metaclass=ABCMeta):
             types.Time(),
             GenericDataType.TEMPORAL,
         ),
-        (re.compile(r"^array.*", re.IGNORECASE), Array(), GenericDataType.STRING),
+        (
+            re.compile(r"^array.*", re.IGNORECASE),
+            Array(),
+            GenericDataType.MULTI_VALUE,
+        ),
         (re.compile(r"^map.*", re.IGNORECASE), Map(), GenericDataType.STRING),
         (re.compile(r"^row.*", re.IGNORECASE), Row(), GenericDataType.STRING),
     )
+
+    # Array support is opted in per concrete engine (``PrestoEngineSpec``,
+    # ``TrinoEngineSpec``); Hive-family descendants lack these functions.
+    @classmethod
+    def array_contains_any(cls, col: ColumnElement, values: list[Any]) -> ColumnElement:
+        # arrays_overlap(col, ARRAY[v1, v2]) is true if they share an element.
+        return func.arrays_overlap(col, cls.array_literal(values))
+
+    @classmethod
+    def array_contains_all(cls, col: ColumnElement, values: list[Any]) -> ColumnElement:
+        # Every value is in col when removing col's elements leaves nothing.
+        return func.cardinality(func.array_except(cls.array_literal(values), col)) == 0
+
+    @classmethod
+    def array_length(cls, col: ColumnElement) -> ColumnElement:
+        return func.cardinality(col)
+
+    @classmethod
+    def array_literal(cls, values: list[Any]) -> ColumnElement:
+        return ArrayConstructor(*values)
+
+    # array_explode isn't implemented: expanding an array takes
+    # ``CROSS JOIN UNNEST(col)`` in the FROM clause, which isn't an
+    # expression, so element suggestions fall back to whole arrays.
+
+    _ARRAY_ELEMENT_RE = re.compile(r"^array\((?P<inner>.+)\)$", re.IGNORECASE)
+
+    @classmethod
+    def get_array_element_type(cls, native_type: str | None) -> GenericDataType | None:
+        if not native_type:
+            return None
+        match = cls._ARRAY_ELEMENT_RE.match(native_type.strip())
+        if not match:
+            return None
+        spec = cls.get_column_spec(match.group("inner").strip())
+        if not spec or spec.generic_type == GenericDataType.MULTI_VALUE:
+            return None
+        return spec.generic_type
 
     # pylint: disable=line-too-long
     _time_grain_expressions = {
@@ -935,6 +994,7 @@ class PrestoEngineSpec(PrestoBaseEngineSpec):
     engine_name = "Presto"
     allows_alias_to_source_column = False
     supports_grouping_sets = True
+    supports_multivalue_columns = True
 
     metadata = {
         "description": "Presto is a distributed SQL query engine for big data.",

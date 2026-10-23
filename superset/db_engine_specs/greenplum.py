@@ -30,6 +30,10 @@ class GreenplumEngineSpec(PostgresEngineSpec):
     It inherits PostgreSQL's SQL syntax and most features.
     """
 
+    # Inherits PostgreSQL's array mappings and hooks, which haven't been
+    # verified against this engine; arrays stay strings until it opts in.
+    supports_multivalue_columns = False
+
     engine = "greenplum"
     engine_name = "Greenplum"
     default_driver = "psycopg2"

@@ -370,11 +370,31 @@ class PostgresParametersSchema(BasicParametersSchema):
         return data
 
 
+def _array_literal_text(values: list[Any]) -> str:
+    """
+    Format ``values`` as a PostgreSQL array literal string, e.g.
+    ``['a', 'b"c']`` -> ``{"a","b\\"c"}``. Sent as a single untyped literal,
+    PostgreSQL converts it to the compared column's own array type, so the
+    same expression works for ``varchar[]``, ``numeric[]`` or ``date[]``
+    columns. A typed ``ARRAY['a']`` would be ``text[]`` and fail with
+    ``operator does not exist: character varying[] && text[]``.
+    """
+
+    def element(value: Any) -> str:
+        if value is None:
+            return "NULL"
+        escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+
+    return "{" + ",".join(element(value) for value in values) + "}"
+
+
 class PostgresEngineSpec(BasicParametersMixin, PostgresBaseEngineSpec):
     engine = "postgresql"
     engine_name = "PostgreSQL"
     engine_aliases = {"postgres"}
 
+    supports_multivalue_columns = True
     supports_dynamic_schema = True
     supports_catalog = True
     supports_dynamic_catalog = True
@@ -683,10 +703,18 @@ class PostgresEngineSpec(BasicParametersMixin, PostgresBaseEngineSpec):
             DOUBLE_PRECISION(),
             GenericDataType.NUMERIC,
         ),
+        # Array columns: ``VARCHAR[]`` / ``NUMERIC(10, 2)[]`` as reflected for
+        # datasets, or ``ARRAY`` where the element type isn't known. Ordered
+        # before the element-type mappings so ``VARCHAR[]`` isn't a string.
+        (
+            re.compile(r"^.+\[\]$"),
+            String(),
+            GenericDataType.MULTI_VALUE,
+        ),
         (
             re.compile(r"^array.*", re.IGNORECASE),
             String(),
-            GenericDataType.STRING,
+            GenericDataType.MULTI_VALUE,
         ),
         (
             re.compile(r"^json.*", re.IGNORECASE),
@@ -708,6 +736,42 @@ class PostgresEngineSpec(BasicParametersMixin, PostgresBaseEngineSpec):
     column_type_mutators: dict[types.TypeEngine, Callable[[Any], Any]] = {
         INTERVAL: _normalize_interval,
     }
+
+    @classmethod
+    def array_contains_any(cls, col: ColumnElement, values: list[Any]) -> ColumnElement:
+        # PostgreSQL: col && '{v1,v2}' (overlap).
+        return col.op("&&", is_comparison=True)(cls.array_literal(values))
+
+    @classmethod
+    def array_contains_all(cls, col: ColumnElement, values: list[Any]) -> ColumnElement:
+        # PostgreSQL: col @> '{v1,v2}' (contains).
+        return col.op("@>", is_comparison=True)(cls.array_literal(values))
+
+    @classmethod
+    def array_length(cls, col: ColumnElement) -> ColumnElement:
+        # cardinality() is 0 for an empty array, where array_length(col, 1) is
+        # NULL and would make "Is empty" miss empty arrays.
+        return sa.func.cardinality(col)
+
+    @classmethod
+    def array_literal(cls, values: list[Any]) -> ColumnElement:
+        return sa.literal(_array_literal_text(values), String())
+
+    @classmethod
+    def array_explode(cls, col: ColumnElement) -> ColumnElement:
+        # unnest() returns one row per element, so SELECT DISTINCT
+        # unnest(col) lists the distinct elements.
+        return sa.func.unnest(col)
+
+    @classmethod
+    def get_array_element_type(cls, native_type: str | None) -> GenericDataType | None:
+        if not native_type or not native_type.strip().endswith("[]"):
+            return None
+        spec = cls.get_column_spec(native_type.strip()[:-2])
+        # Multi-dimensional arrays (``INTEGER[][]``) aren't supported.
+        if not spec or spec.generic_type == GenericDataType.MULTI_VALUE:
+            return None
+        return spec.generic_type
 
     @classmethod
     def get_schema_from_engine_params(

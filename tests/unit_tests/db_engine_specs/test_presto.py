@@ -134,7 +134,7 @@ def test_convert_dttm_base_spec_keeps_microseconds() -> None:
         ("json", types.JSON, None, GenericDataType.STRING, False),
         ("date", types.Date, None, GenericDataType.TEMPORAL, True),
         ("interval year to month", Interval, None, GenericDataType.TEMPORAL, True),
-        ("array(varchar)", Array, None, GenericDataType.STRING, False),
+        ("array(varchar)", Array, None, GenericDataType.MULTI_VALUE, False),
         ("map(varchar, integer)", Map, None, GenericDataType.STRING, False),
         ("row(a varchar, b integer)", Row, None, GenericDataType.STRING, False),
     ],

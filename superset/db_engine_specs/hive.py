@@ -106,6 +106,9 @@ class HiveEngineSpec(PrestoEngineSpec):
 
     engine = "hive"
     engine_name = "Apache Hive"
+    # Hive has no arrays_overlap/cardinality, so it doesn't share Presto's
+    # array hooks; its arrays stay strings.
+    supports_multivalue_columns = False
     max_column_name_length = 767
     allows_alias_to_source_column = True
     allows_hidden_orderby_agg = False

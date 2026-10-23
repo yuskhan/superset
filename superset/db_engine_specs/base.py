@@ -2671,6 +2671,14 @@ class BaseEngineSpec:  # pylint: disable=too-many-public-methods
             match = regex.match(column_type)
             if not match:
                 continue
+            # Subclasses can inherit array mappings from an engine that opted in
+            # (e.g. Hive from Presto); without the array_* hooks they keep
+            # treating arrays as strings.
+            if (
+                generic_type == GenericDataType.MULTI_VALUE
+                and not cls.supports_multivalue_columns
+            ):
+                generic_type = GenericDataType.STRING
             if callable(sqla_type):
                 return sqla_type(match), generic_type
             return sqla_type, generic_type

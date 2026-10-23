@@ -27,7 +27,7 @@ import logging
 import re
 import uuid
 from collections.abc import Hashable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from typing import (
     Any,
@@ -4567,10 +4567,13 @@ class ExploreMixin:  # pylint: disable=too-many-public-methods
         # than distinct whole arrays by expanding the array first (e.g. ClickHouse
         # arrayJoin). Only when the engine supports arrays and the column is
         # actually an array column; otherwise fall back to whole-value suggestions.
+        # Engines whose element expansion is a FROM-clause construct (e.g. Trino
+        # CROSS JOIN UNNEST) don't implement array_explode and fall back too.
         if array_elements and db_engine_spec.supports_multivalue_columns:
             col_spec = db_engine_spec.get_column_spec(native_type=target_col.type)
             if col_spec and col_spec.generic_type == GenericDataType.MULTI_VALUE:
-                value_expr = db_engine_spec.array_explode(value_expr)
+                with suppress(NotImplementedError):
+                    value_expr = db_engine_spec.array_explode(value_expr)
 
         qry = (
             sa.select(

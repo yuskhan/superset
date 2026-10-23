@@ -3060,3 +3060,70 @@ def test_handle_cursor_stops_polling_after_time_limit(
     assert query.progress == 50
     assert mock_time.sleep.call_count == 1
     mock_cancel_query.assert_not_called()
+
+
+def _compile_trino(expr: Any) -> str:
+    from trino.sqlalchemy.dialect import TrinoDialect
+
+    return str(
+        expr.compile(dialect=TrinoDialect(), compile_kwargs={"literal_binds": True})
+    )
+
+
+def test_trino_supports_multivalue_columns() -> None:
+    from superset.db_engine_specs.presto import PrestoEngineSpec
+    from superset.db_engine_specs.trino import TrinoEngineSpec
+
+    assert TrinoEngineSpec.supports_multivalue_columns is True
+    assert PrestoEngineSpec.supports_multivalue_columns is True
+    column_spec = TrinoEngineSpec.get_column_spec("array(varchar)")
+    assert column_spec is not None
+    assert column_spec.generic_type == GenericDataType.MULTI_VALUE
+
+
+def test_trino_array_sql() -> None:
+    from sqlalchemy import column
+
+    from superset.db_engine_specs.trino import TrinoEngineSpec as spec  # noqa: N813
+
+    skills = column("skills")
+    assert _compile_trino(spec.array_contains_any(skills, ["Driver", "Cook"])) == (
+        "arrays_overlap(skills, ARRAY['Driver', 'Cook'])"
+    )
+    assert _compile_trino(spec.array_contains_all(skills, ["Driver", 5])) == (
+        "cardinality(array_except(ARRAY['Driver', 5], skills)) = 0"
+    )
+    assert _compile_trino(spec.array_length(skills)) == "cardinality(skills)"
+    assert _compile_trino(skills == spec.array_literal(["a"])) == (
+        "skills = ARRAY['a']"
+    )
+
+
+def test_trino_array_explode_falls_back() -> None:
+    """Expanding needs CROSS JOIN UNNEST, which isn't an expression."""
+    from sqlalchemy import column
+
+    from superset.db_engine_specs.trino import TrinoEngineSpec as spec  # noqa: N813
+
+    with pytest.raises(NotImplementedError):
+        spec.array_explode(column("skills"))
+
+
+@pytest.mark.parametrize(
+    "native_type,expected",
+    [
+        ("array(varchar)", GenericDataType.STRING),
+        ("ARRAY(INTEGER)", GenericDataType.NUMERIC),
+        ("array(decimal(10, 2))", GenericDataType.NUMERIC),
+        ("array(date)", GenericDataType.TEMPORAL),
+        ("array(boolean)", GenericDataType.BOOLEAN),
+        ("array(array(varchar))", None),
+        ("varchar", None),
+    ],
+)
+def test_trino_get_array_element_type(
+    native_type: str, expected: GenericDataType | None
+) -> None:
+    from superset.db_engine_specs.trino import TrinoEngineSpec as spec  # noqa: N813
+
+    assert spec.get_array_element_type(native_type) == expected

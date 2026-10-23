@@ -18,7 +18,7 @@
 # pylint: disable=import-outside-toplevel
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 from unittest import mock
 
 import pytest
@@ -30,6 +30,7 @@ from superset.app import SupersetApp
 from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.superset_typing import OAuth2ClientConfig
 from superset.utils import json
+from superset.utils.core import GenericDataType
 from tests.unit_tests.db_engine_specs.utils import assert_convert_dttm
 from tests.unit_tests.fixtures.common import dttm  # noqa: F401
 
@@ -879,3 +880,47 @@ def test_extended_aggregation_func_median_uses_native_snowflake_syntax() -> None
 
     for aggregate in ("STDDEV_SAMP", "VAR_SAMP"):
         assert SnowflakeEngineSpec.get_extended_aggregation_func(aggregate) is not None
+
+
+def _compile_snowflake(expr: Any) -> str:
+    from snowflake.sqlalchemy import snowdialect
+
+    return str(
+        expr.compile(
+            dialect=snowdialect.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+
+
+def test_snowflake_array_sql() -> None:
+    from sqlalchemy import column
+
+    from superset.db_engine_specs.snowflake import SnowflakeEngineSpec as spec  # noqa: N813
+
+    assert spec.supports_multivalue_columns is True
+    column_spec = spec.get_column_spec("ARRAY")
+    assert column_spec is not None
+    assert column_spec.generic_type == GenericDataType.MULTI_VALUE
+
+    tags = column("tags")
+    assert _compile_snowflake(spec.array_contains_any(tags, ["a", "b"])) == (
+        "arrays_overlap(tags, array_construct('a', 'b'))"
+    )
+    assert _compile_snowflake(spec.array_contains_all(tags, ["a", "b"])) == (
+        "array_contains(to_variant('a'), tags) "
+        "AND array_contains(to_variant('b'), tags)"
+    )
+    assert _compile_snowflake(spec.array_length(tags)) == "array_size(tags)"
+    with pytest.raises(NotImplementedError):
+        spec.array_explode(tags)
+
+
+def test_snowflake_get_array_element_type() -> None:
+    from superset.db_engine_specs.snowflake import SnowflakeEngineSpec as spec  # noqa: N813
+
+    # Semi-structured arrays hold VARIANTs of any type.
+    assert spec.get_array_element_type("ARRAY") is None
+    assert spec.get_array_element_type("ARRAY(DECIMAL(38, 0))") == (
+        GenericDataType.NUMERIC
+    )
+    assert spec.get_array_element_type("ARRAY(VARCHAR)") == GenericDataType.STRING

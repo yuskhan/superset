@@ -14,18 +14,23 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+from collections.abc import Iterator
 from textwrap import dedent
 from unittest import mock
 
+import pytest
 from flask.ctx import AppContext
-from sqlalchemy import column, literal_column
+from sqlalchemy import column, literal_column, text
 from sqlalchemy.dialects import postgresql
 
+from superset import db
+from superset.common.db_query_status import QueryStatus
+from superset.connectors.sqla.models import SqlaTable
 from superset.db_engine_specs import load_engine_specs
 from superset.db_engine_specs.postgres import PostgresEngineSpec
 from superset.errors import ErrorLevel, SupersetError, SupersetErrorType
 from superset.models.sql_lab import Query
-from superset.utils.core import backend
+from superset.utils.core import backend, GenericDataType, QueryObjectFilterClause
 from superset.utils.database import get_example_database
 from tests.integration_tests.base_tests import SupersetTestCase
 from tests.integration_tests.fixtures.certificates import ssl_certificate
@@ -524,3 +529,107 @@ def test_get_catalog_names(app_context: AppContext) -> None:
             "postgres",
             "superset",
         }
+
+
+@pytest.fixture
+def multivalue_table(app_context: AppContext) -> Iterator[SqlaTable]:
+    """
+    A real table with array columns in the example database, synced as a
+    dataset so the column types come from PostgreSQL's own reflection.
+    """
+    if backend() != "postgresql":
+        pytest.skip("requires PostgreSQL")
+
+    database = get_example_database()
+    with database.get_sqla_engine() as engine:
+        with engine.begin() as connection:
+            connection.execute(text("DROP TABLE IF EXISTS multivalue_test"))
+            connection.execute(
+                text(
+                    "CREATE TABLE multivalue_test (id INT, skills VARCHAR(20)[], "
+                    "scores INT[], prices NUMERIC(10, 2)[], days DATE[])"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO multivalue_test VALUES "
+                    "(1, '{Driver,Cook}', '{5,6}', '{1.50}', '{2024-01-01}'), "
+                    "(2, '{Cook}', '{7}', '{2.00,3.00}', NULL), "
+                    "(3, '{}', '{}', NULL, NULL), "
+                    "(4, NULL, NULL, NULL, NULL)"
+                )
+            )
+
+    table = SqlaTable(table_name="multivalue_test", database=database)
+    db.session.add(table)
+    table.fetch_metadata()
+    yield table
+
+    db.session.delete(table)
+    db.session.commit()
+    with database.get_sqla_engine() as engine:
+        with engine.begin() as connection:
+            connection.execute(text("DROP TABLE multivalue_test"))
+
+
+def _matching_ids(table: SqlaTable, flt: QueryObjectFilterClause) -> list[int]:
+    result = table.query(
+        {
+            "granularity": None,
+            "from_dttm": None,
+            "to_dttm": None,
+            "is_timeseries": False,
+            "columns": ["id"],
+            "metrics": [],
+            "filter": [flt],
+            "orderby": [("id", True)],
+            "row_limit": 100,
+            "extras": {},
+        }
+    )
+    assert result.status == QueryStatus.SUCCESS, result.error_message
+    return result.df["id"].tolist()
+
+
+def test_multivalue_columns_are_detected(multivalue_table: SqlaTable) -> None:
+    types_by_name = {
+        column.column_name: column.type_generic for column in multivalue_table.columns
+    }
+    assert types_by_name == {
+        "id": GenericDataType.NUMERIC,
+        "skills": GenericDataType.MULTI_VALUE,
+        "scores": GenericDataType.MULTI_VALUE,
+        "prices": GenericDataType.MULTI_VALUE,
+        "days": GenericDataType.MULTI_VALUE,
+    }
+
+
+@pytest.mark.parametrize(
+    "flt,expected",
+    [
+        ({"col": "skills", "op": "CONTAINS_ANY", "val": ["Driver", "x"]}, [1]),
+        ({"col": "skills", "op": "CONTAINS_ALL", "val": ["Cook"]}, [1, 2]),
+        ({"col": "skills", "op": "CONTAINS_ALL", "val": ["Cook", "Driver"]}, [1]),
+        # Values arrive as strings and are coerced to the element type.
+        ({"col": "scores", "op": "CONTAINS_ANY", "val": ["6", "7"]}, [1, 2]),
+        ({"col": "prices", "op": "CONTAINS_ANY", "val": ["2"]}, [2]),
+        ({"col": "days", "op": "CONTAINS_ANY", "val": ["2024-01-01"]}, [1]),
+        ({"col": "skills", "op": "IS_EMPTY"}, [3]),
+        ({"col": "skills", "op": "IS_NOT_EMPTY"}, [1, 2]),
+        ({"col": "skills", "op": "LENGTH_GREATER_THAN", "val": 1}, [1]),
+        ({"col": "skills", "op": "==", "val": "['Driver', 'Cook']"}, [1]),
+        ({"col": "skills", "op": "IN", "val": ["['Cook']", "[]"]}, [2, 3]),
+    ],
+)
+def test_multivalue_filters(
+    multivalue_table: SqlaTable, flt: QueryObjectFilterClause, expected: list[int]
+) -> None:
+    assert _matching_ids(multivalue_table, flt) == expected
+
+
+def test_multivalue_values_for_column_suggests_elements(
+    multivalue_table: SqlaTable,
+) -> None:
+    assert sorted(
+        multivalue_table.values_for_column("skills", array_elements=True)
+    ) == ["Cook", "Driver"]

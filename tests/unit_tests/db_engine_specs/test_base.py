@@ -2056,3 +2056,33 @@ def test_expand_nested_columns_default_returns_input() -> None:
     ]
 
     assert BaseEngineSpec.expand_nested_columns(object(), columns) is columns
+
+
+def test_get_column_types_multivalue_requires_opt_in() -> None:
+    """
+    An engine inheriting an array mapping without opting in keeps arrays as
+    strings, since it lacks the array_* hooks the filters would call.
+    """
+    import re
+
+    from sqlalchemy import types
+
+    from superset.db_engine_specs.base import BaseEngineSpec
+    from superset.utils.core import GenericDataType
+
+    class ArrayEngineSpec(BaseEngineSpec):
+        supports_multivalue_columns = True
+        column_type_mappings = (
+            (re.compile(r"^list"), types.String(), GenericDataType.MULTI_VALUE),
+        )
+
+    class DescendantEngineSpec(ArrayEngineSpec):
+        supports_multivalue_columns = False
+
+    assert ArrayEngineSpec.get_column_types("list<int>") == (
+        ArrayEngineSpec.column_type_mappings[0][1],
+        GenericDataType.MULTI_VALUE,
+    )
+    descendant = DescendantEngineSpec.get_column_types("list<int>")
+    assert descendant is not None
+    assert descendant[1] == GenericDataType.STRING
